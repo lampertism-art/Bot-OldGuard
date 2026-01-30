@@ -140,4 +140,8 @@ async def pujar(ctx, cantidad: int):
     await ctx.send(f"Nueva mejor puja: {cantidad} por {ctx.author.mention}")
 
 import os
+
+print("DEBUG_TOKEN:", os.getenv("DISCORD_TOKEN"))
+
+
 bot.run(os.getenv("DISCORD_TOKEN"))
