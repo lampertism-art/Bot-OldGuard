@@ -4,7 +4,7 @@ import json
 import asyncio
 
 intents = discord.Intents.default()
-intents.message_content = True
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 PUNTOS_FILE = "puntos.json"
@@ -145,5 +145,6 @@ print("DEBUG_TOKEN:", os.getenv("DISCORD_TOKEN"))
 
 
 bot.run(os.getenv("DISCORD_TOKEN"))
+
 
 
