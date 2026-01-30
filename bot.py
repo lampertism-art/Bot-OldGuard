@@ -86,23 +86,28 @@ async def subasta(ctx, item: str, tiempo: int):
 
 @bot.command()
 async def ranking(ctx):
-    ranking = []
+    puntos = cargar_puntos()
 
-    for member in ctx.guild.members:
-        if member.bot:
-            continue
+    if not puntos:
+        await ctx.send("No hay puntos registrados todavía")
+        return
 
-        user_id = str(member.id)
-        pts = puntos.get(user_id, 0)
-        ranking.append((member.display_name, pts))
+    # Ordenar de mayor a menor
+    puntos_ordenados = sorted(
+        puntos.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
 
-    ranking.sort(key=lambda x: x[1], reverse=True)
+    mensaje = "**🏆 Ranking de puntos:**\n"
 
-    texto = "**🏆 Ranking de puntos**\n\n"
-    for nombre, pts in ranking:
-        texto += f"{nombre}: {pts} puntos\n"
+    for posicion, (user_id, cantidad) in enumerate(puntos_ordenados, start=1):
+        miembro = ctx.guild.get_member(int(user_id))
+        if miembro:
+            nombre = miembro.nick if miembro.nick else miembro.name
+            mensaje += f"**{posicion}.** {nombre} → **{cantidad}** puntos\n"
 
-    await ctx.send(texto)
+    await ctx.send(mensaje)
 
 
 @bot.command()
@@ -140,4 +145,5 @@ print("DEBUG_TOKEN:", os.getenv("DISCORD_TOKEN"))
 
 
 bot.run(os.getenv("DISCORD_TOKEN"))
+
 
