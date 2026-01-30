@@ -101,13 +101,19 @@ async def ranking(ctx):
 
     mensaje = "**🏆 Ranking de puntos:**\n"
 
-    for posicion, (user_id, cantidad) in enumerate(puntos_ordenados, start=1):
-        miembro = ctx.guild.get_member(int(user_id))
-        if miembro:
+    posicion = 1
+    for user_id, cantidad in puntos_ordenados:
+        try:
+            miembro = await ctx.guild.fetch_member(int(user_id))
             nombre = miembro.nick if miembro.nick else miembro.name
-            mensaje += f"**{posicion}.** {nombre} → **{cantidad}** puntos\n"
+        except:
+            nombre = f"Usuario ID {user_id}"
+
+        mensaje += f"**{posicion}.** {nombre} → **{cantidad}** puntos\n"
+        posicion += 1
 
     await ctx.send(mensaje)
+
 
 
 @bot.command()
@@ -145,6 +151,7 @@ print("DEBUG_TOKEN:", os.getenv("DISCORD_TOKEN"))
 
 
 bot.run(os.getenv("DISCORD_TOKEN"))
+
 
 
 
