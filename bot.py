@@ -1,155 +1,185 @@
 import discord
 from discord.ext import commands
-import json
+import asyncpg
+import os
 import asyncio
+from datetime import datetime, timedelta
 
+# ───────── CONFIG ─────────
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.members = True
 
-PUNTOS_FILE = "puntos.json"
-subasta = None
+bot = commands.Bot(command_prefix="m!", intents=intents)
+db = None
 
-def cargar_puntos():
-    try:
-        with open(PUNTOS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+# ───────── DATABASE ─────────
+async def init_db():
+    global db
+    db = await asyncpg.connect(os.getenv("DATABASE_URL"))
 
-def guardar_puntos(data):
-    with open(PUNTOS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS puntos (
+        user_id BIGINT PRIMARY KEY,
+        puntos INTEGER NOT NULL DEFAULT 0
+    );
+    """)
 
+    await db.execute("""
+    CREATE TABLE IF NOT EXISTS subastas (
+        guild_id BIGINT PRIMARY KEY,
+        descripcion TEXT,
+        mejor_puja INTEGER DEFAULT 0,
+        mejor_usuario BIGINT,
+        termina_en TIMESTAMP
+    );
+    """)
+
+# ───────── EVENTOS ─────────
 @bot.event
 async def on_ready():
-    print(f"Conectado como {bot.user}")
+    await init_db()
+    print(f"✅ Bot conectado como {bot.user}")
 
+# ───────── UTILIDADES ─────────
+async def get_puntos(user_id):
+    row = await db.fetchrow(
+        "SELECT puntos FROM puntos WHERE user_id = $1", user_id
+    )
+    return row["puntos"] if row else 0
+
+async def set_puntos(user_id, cantidad):
+    await db.execute("""
+    INSERT INTO puntos (user_id, puntos)
+    VALUES ($1, $2)
+    ON CONFLICT (user_id)
+    DO UPDATE SET puntos = $2
+    """, user_id, cantidad)
+
+# ───────── PUNTOS ─────────
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def addpuntos(ctx, user: discord.Member, cantidad: int):
-    puntos = cargar_puntos()
-    uid = str(user.id)
-    puntos[uid] = puntos.get(uid, 0) + cantidad
-    guardar_puntos(puntos)
-    await ctx.send(f"{user.mention} ahora tiene {puntos[uid]} puntos")
+    puntos = await get_puntos(user.id)
+    puntos += cantidad
+    await set_puntos(user.id, puntos)
+    await ctx.send(f"✅ {user.mention} ahora tiene **{puntos} puntos**")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def quitarpuntos(ctx, user: discord.Member, cantidad: int):
-    puntos = cargar_puntos()
-    uid = str(user.id)
-    puntos[uid] = max(0, puntos.get(uid, 0) - cantidad)
-    guardar_puntos(puntos)
-    await ctx.send(f"{user.mention} ahora tiene {puntos[uid]} puntos")
+    puntos = max(0, await get_puntos(user.id) - cantidad)
+    await set_puntos(user.id, puntos)
+    await ctx.send(f"⚠️ {user.mention} ahora tiene **{puntos} puntos**")
 
 @bot.command()
 async def puntos(ctx, user: discord.Member = None):
     user = user or ctx.author
-    puntos = cargar_puntos()
-    await ctx.send(f"{user.mention} tiene {puntos.get(str(user.id), 0)} puntos")
+    puntos = await get_puntos(user.id)
+    await ctx.send(f"💰 {user.mention} tiene **{puntos} puntos**")
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def subasta(ctx, item: str, tiempo: int):
-    global subasta
-
-    if subasta:
-        await ctx.send("Ya hay una subasta activa")
-        return
-
-    subasta = {
-        "item": item,
-        "mejor_puja": 0,
-        "mejor_usuario": None,
-        "pujas_usadas": set()
-    }
-
-    await ctx.send(
-        f"SUBASTA INICIADA\n"
-        f"Objeto: {item}\n"
-        f"Duración: {tiempo} segundos\n"
-        f"Usa !pujar <cantidad>"
-    )
-
-    await asyncio.sleep(tiempo)
-
-    if subasta["mejor_usuario"]:
-        await ctx.send(
-            f"GANADOR: {subasta['mejor_usuario'].mention}\n"
-            f"Puja: {subasta['mejor_puja']} puntos"
-        )
-    else:
-        await ctx.send("La subasta terminó sin pujas")
-
-    subasta = None
-
-
+# ───────── RANKING ─────────
 @bot.command()
 async def ranking(ctx):
-    puntos = cargar_puntos()
+    rows = await db.fetch("""
+    SELECT user_id, puntos FROM puntos
+    ORDER BY puntos DESC
+    LIMIT 20
+    """)
 
-    if not puntos:
-        await ctx.send("No hay puntos registrados todavía")
+    if not rows:
+        await ctx.send("❌ No hay puntos registrados")
         return
 
-    # Ordenar de mayor a menor
-    puntos_ordenados = sorted(
-        puntos.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    mensaje = "**🏆 Ranking de puntos:**\n"
-
-    for posicion, (user_id, cantidad) in enumerate(puntos_ordenados, start=1):
-        miembro = ctx.guild.get_member(int(user_id))
-        if miembro:
-            nombre = miembro.nick if miembro.nick else miembro.name
-            mensaje += f"**{posicion}.** {nombre} → **{cantidad}** puntos\n"
+    mensaje = "**🏆 Ranking de puntos**\n\n"
+    for i, row in enumerate(rows, start=1):
+        member = ctx.guild.get_member(row["user_id"])
+        nombre = member.display_name if member else f"ID {row['user_id']}"
+        mensaje += f"**{i}.** {nombre} → **{row['puntos']}** puntos\n"
 
     await ctx.send(mensaje)
 
+# ───────── SUBASTAS ─────────
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def subasta(ctx, tiempo: int, *, descripcion: str):
+    existe = await db.fetchrow(
+        "SELECT 1 FROM subastas WHERE guild_id = $1", ctx.guild.id
+    )
+    if existe:
+        await ctx.send("❌ Ya hay una subasta activa")
+        return
 
+    termina = datetime.utcnow() + timedelta(seconds=tiempo)
+
+    await db.execute("""
+    INSERT INTO subastas (guild_id, descripcion, termina_en)
+    VALUES ($1, $2, $3)
+    """, ctx.guild.id, descripcion, termina)
+
+    await ctx.send(
+        f"🔥 **SUBASTA INICIADA** 🔥\n"
+        f"📝 {descripcion}\n"
+        f"⏱ {tiempo} segundos\n"
+        f"💸 Usa `m!pujar cantidad`"
+    )
+
+    await asyncio.sleep(tiempo)
+    await cerrar_subasta(ctx.guild.id, ctx)
+
+async def cerrar_subasta(guild_id, ctx):
+    subasta = await db.fetchrow(
+        "SELECT * FROM subastas WHERE guild_id = $1", guild_id
+    )
+    if not subasta:
+        return
+
+    if subasta["mejor_usuario"]:
+        puntos = await get_puntos(subasta["mejor_usuario"])
+        puntos = max(0, puntos - subasta["mejor_puja"])
+        await set_puntos(subasta["mejor_usuario"], puntos)
+
+        member = ctx.guild.get_member(subasta["mejor_usuario"])
+        await ctx.send(
+            f"🏆 **SUBASTA FINALIZADA** 🏆\n"
+            f"👤 Ganador: {member.mention}\n"
+            f"💰 Puja: {subasta['mejor_puja']} puntos\n"
+            f"📉 Restantes: {puntos}"
+        )
+    else:
+        await ctx.send("⏹ Subasta terminada sin pujas")
+
+    await db.execute("DELETE FROM subastas WHERE guild_id = $1", guild_id)
 
 @bot.command()
 async def pujar(ctx, cantidad: int):
-    global subasta
-
+    subasta = await db.fetchrow(
+        "SELECT * FROM subastas WHERE guild_id = $1", ctx.guild.id
+    )
     if not subasta:
-        await ctx.send("No hay subasta activa")
+        await ctx.send("❌ No hay subasta activa")
         return
 
-    puntos = cargar_puntos()
-    uid = str(ctx.author.id)
-
-    if cantidad > puntos.get(uid, 0):
-        await ctx.send("No tenés suficientes puntos")
-        return
-
-    if cantidad in subasta["pujas_usadas"]:
-        await ctx.send("Esa puja ya fue usada")
-        return
+    puntos = await get_puntos(ctx.author.id)
 
     if cantidad <= subasta["mejor_puja"]:
-        await ctx.send("La puja debe ser mayor")
+        await ctx.send("❌ La puja debe ser mayor")
         return
 
-    subasta["mejor_puja"] = cantidad
-    subasta["mejor_usuario"] = ctx.author
-    subasta["pujas_usadas"].add(cantidad)
+    if cantidad > puntos:
+        await ctx.send("❌ No tenés suficientes puntos")
+        return
 
-    await ctx.send(f"Nueva mejor puja: {cantidad} por {ctx.author.mention}")
+    await db.execute("""
+    UPDATE subastas
+    SET mejor_puja = $1, mejor_usuario = $2
+    WHERE guild_id = $3
+    """, cantidad, ctx.author.id, ctx.guild.id)
 
-import os
+    await ctx.send(
+        f"💸 Nueva mejor puja: **{cantidad} puntos** por {ctx.author.mention}"
+    )
 
-print("DEBUG_TOKEN:", os.getenv("DISCORD_TOKEN"))
-
-
+# ───────── ARRANQUE ─────────
 bot.run(os.getenv("DISCORD_TOKEN"))
-
-
-
-
-
 
