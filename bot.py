@@ -105,13 +105,10 @@ async def ranking(ctx):
 @commands.has_permissions(administrator=True)
 async def subasta(ctx, tiempo: int, *args):
     if not args:
-        await ctx.send(
-            "Uso:\n"
-            "`m!subasta <tiempo> [puja_minima] <descripcion>`"
-        )
+        await ctx.send("❌ Debes indicar una descripción")
         return
 
-    # detectar si hay puja mínima
+    # Caso 1: viene puja mínima
     if args[0].isdigit():
         puja_minima = int(args[0])
         descripcion = " ".join(args[1:])
@@ -120,7 +117,7 @@ async def subasta(ctx, tiempo: int, *args):
         descripcion = " ".join(args)
 
     if not descripcion:
-        await ctx.send("❌ Debes indicar una descripción")
+        await ctx.send("❌ Descripción inválida")
         return
 
     existe = await db.fetchrow(
@@ -133,23 +130,23 @@ async def subasta(ctx, tiempo: int, *args):
     termina = datetime.utcnow() + timedelta(seconds=tiempo)
 
     await db.execute("""
-    INSERT INTO subastas (
-        guild_id, descripcion, puja_minima, termina_en
-    )
-    VALUES ($1, $2, $3, $4)
+        INSERT INTO subastas (
+            guild_id, descripcion, mejor_puja, puja_minima, termina_en
+        )
+        VALUES ($1, $2, $3, $3, $4)
     """, ctx.guild.id, descripcion, puja_minima, termina)
 
     await ctx.send(
         f"🔥 **SUBASTA INICIADA** 🔥\n"
         f"📝 {descripcion}\n"
         f"⏱ {tiempo} segundos\n"
-        f"💰 Puja mínima inicial: **{puja_minima}**\n"
+        f"💸 Puja mínima: **{puja_minima} puntos**\n"
         f"💸 Usa `m!pujar cantidad`"
     )
 
     await asyncio.sleep(tiempo)
     await cerrar_subasta(ctx.guild.id, ctx)
-
+    
 async def cerrar_subasta(guild_id, ctx):
     subasta = await db.fetchrow(
         "SELECT * FROM subastas WHERE guild_id = $1", guild_id
@@ -185,25 +182,20 @@ async def pujar(ctx, cantidad: int):
 
     puntos = await get_puntos(ctx.author.id)
 
-    if subasta["mejor_puja"] == 0:
-        if cantidad < subasta["puja_minima"]:
-            await ctx.send(
-                f"❌ La puja mínima es **{subasta['puja_minima']} puntos**"
-            )
-            return
-    else:
-        if cantidad <= subasta["mejor_puja"]:
-            await ctx.send("❌ La puja debe ser mayor")
-            return
+    minimo = max(subasta["mejor_puja"], subasta["puja_minima"])
+
+    if cantidad <= minimo:
+        await ctx.send(f"❌ La puja debe ser mayor a **{minimo}**")
+        return
 
     if cantidad > puntos:
         await ctx.send("❌ No tenés suficientes puntos")
         return
 
     await db.execute("""
-    UPDATE subastas
-    SET mejor_puja = $1, mejor_usuario = $2
-    WHERE guild_id = $3
+        UPDATE subastas
+        SET mejor_puja = $1, mejor_usuario = $2
+        WHERE guild_id = $3
     """, cantidad, ctx.author.id, ctx.guild.id)
 
     await ctx.send(
@@ -211,4 +203,6 @@ async def pujar(ctx, cantidad: int):
     )
 
 # ───────── ARRANQUE ─────────
+print("🚀 Deploy V1.0.2")
 bot.run(os.getenv("DISCORD_TOKEN"))
+
